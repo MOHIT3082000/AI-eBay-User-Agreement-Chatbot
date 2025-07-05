@@ -1,0 +1,316 @@
+# RAG Chatbot for eBay User Agreement
+# STEP 1: DOCUMENT PREPROCESSING & CHUNKING
+
+import os
+import json
+import nltk
+from pathlib import Path
+from nltk.tokenize import sent_tokenize
+
+nltk.download('punkt')
+
+# Load document
+with open("data/ebay_user_agreement.txt", "r", encoding="utf-8") as f:
+    raw_text = f.read()
+
+# Sentence-aware chunking
+sentences = sent_tokenize(raw_text)
+chunks = []
+current_chunk = []
+current_length = 0
+max_words = 250
+
+for sent in sentences:
+    word_count = len(sent.split())
+    if current_length + word_count <= max_words:
+        current_chunk.append(sent)
+        current_length += word_count
+    else:
+        chunks.append(" ".join(current_chunk))
+        current_chunk = [sent]
+        current_length = word_count
+
+if current_chunk:
+    chunks.append(" ".join(current_chunk))
+
+# Save chunks
+Path("chunks").mkdir(parents=True, exist_ok=True)
+with open("chunks/chunks.json", "w", encoding="utf-8") as f:
+    json.dump(chunks, f, indent=2)
+
+print(f"Saved {len(chunks)} chunks.")
+
+# STEP 2: EMBEDDING USING SENTENCE-TRANSFORMERS
+from sentence_transformers import SentenceTransformer
+import chromadb
+from chromadb.config import Settings
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+client = chromadb.Client(Settings(persist_directory="vectordb", chroma_db_impl="duckdb+parquet"))
+
+# Create Chroma collection
+collection = client.create_collection(name="ebay_rag")
+
+# Embed and add to DB
+for i, chunk in enumerate(chunks):
+    embedding = model.encode(chunk).tolist()
+    collection.add(documents=[chunk], embeddings=[embedding], ids=[f"chunk-{i}"])
+
+client.persist()
+print("Embedding complete and saved to vectordb.")
+
+# STEP 3: RAG RETRIEVER + LLM GENERATOR
+import openai  # or use transformers / ollama if using local LLMs
+from sentence_transformers import util
+
+# Example query
+query = "What happens if a buyer doesn't pay on eBay?"
+query_vec = model.encode(query)
+
+# Top-3 relevant chunks
+results = collection.query(query_embeddings=[query_vec.tolist()], n_results=3)
+context = "\n".join(results["documents"][0])
+
+# Prompt assembly
+prompt = f"""
+Context:
+{context}
+
+Question:
+{query}
+
+Answer:
+"""
+
+# If using OpenAI (replace with local LLM if needed)
+response = openai.ChatCompletion.create(
+    model="gpt-3.5-turbo",
+    messages=[{"role": "user", "content": prompt}],
+    stream=False
+)
+
+print("\nResponse:\n", response['choices'][0]['message']['content'])
+
+# STEP 4: STREAMLIT CHAT UI
+# Save this as app.py and run with streamlit run app.py
+
+# import streamlit as st
+# import random
+
+# st.set_page_config(page_title="eBay RAG Chatbot", layout="wide")
+# st.title("\U0001F916 eBay User Agreement Chatbot")
+
+# if "history" not in st.session_state:
+#     st.session_state.history = []
+
+# query = st.text_input("Ask a question:")
+# if query:
+#     query_vec = model.encode(query)
+#     results = collection.query(query_embeddings=[query_vec.tolist()], n_results=3)
+#     context = "\n".join(results["documents"][0])
+#     prompt = f"Context:\n{context}\n\nQuestion:\n{query}\n\nAnswer:\n"
+
+#     with st.spinner("Generating response..."):
+#         response = openai.ChatCompletion.create(
+#             model="gpt-3.5-turbo",
+#             messages=[{"role": "user", "content": prompt}],
+#             stream=True
+#         )
+
+#         full_response = ""
+#         for chunk in response:
+#             content = chunk.choices[0].delta.get("content", "")
+#             full_response += content
+#             st.write(content, end="")
+#         st.session_state.history.append((query, full_response))
+
+# with st.sidebar:
+#     st.subheader("Stats")
+#     st.write(f"Model: gpt-3.5-turbo")
+#     st.write(f"Chunks: {len(chunks)}")
+#     if st.button("Clear Chat"):
+#         st.session_state.history = []
+
+# for q, a in st.session_state.history:
+#     st.markdown(f"**You:** {q}")
+#     st.markdown(f"**Bot:** {a}")
+
+analyze this file and document and task and code and tell me how to properly do this project in as simple as easy and efficient and working manner as possible in minimum time
+
+Thought for a few seconds
+
+
+ChatGPT said:
+Here’s a lean, end‑to‑end roadmap to get a working RAG chatbot up and running against the eBay User Agreement (or any similar document) in the shortest time possible, while still hitting all the requirements:
+
+1. Environment & Dependencies
+Keep your stack minimal. In one requirements.txt you need:
+
+text
+Copy
+Edit
+streamlit
+sentence-transformers
+chromadb
+transformers
+torch        # or accelerate + bitsandbytes if you want 4‑bit models
+langchain    # optional but will save you boilerplate
+Install with:
+
+bash
+Copy
+Edit
+pip install -r requirements.txt
+2. Document Prep & Chunking
+Reuse your sentence‑level splitter, but simplify with LangChain’s utility or HuggingFace’s text_splitter. Aim for 150–200 words per chunk (a good balance of context vs. speed).
+
+python
+Copy
+Edit
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+with open("data/ebay_user_agreement.txt") as f:
+    raw = f.read()
+
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=200, chunk_overlap=30, separators=["\n\n", "\n", " ", ""]
+)
+chunks = splitter.split_text(raw)
+Save out chunks.json and you’re done. No need to reinvent the wheel.
+
+3. Embedding & Vector Store
+Use Chroma directly or via LangChain:
+
+python
+Copy
+Edit
+from sentence_transformers import SentenceTransformer
+import chromadb
+
+model = SentenceTransformer("all-MiniLM-L6-v2")
+client = chromadb.Client(
+    Settings(persist_directory="vectordb", chroma_db_impl="duckdb+parquet")
+)
+collection = client.get_or_create_collection("ebay_rag")
+
+# embed & upsert
+embeddings = model.encode(chunks, show_progress_bar=True).tolist()
+ids = [f"chunk_{i}" for i in range(len(chunks))]
+collection.upsert(ids=ids, embeddings=embeddings, documents=chunks)
+client.persist()
+This runs in a few minutes even on CPU for ~50 chunks.
+
+4. Retriever + LLM Generator
+Skip heavy fine‑tuning—use an instruction‑tuned LLM off‑the‑shelf (e.g. mistral-7b-instruct or llama-3-chat on Hugging Face). Combine via LangChain’s RetrievalQA chain to auto‑handle prompt templates and retrieval:
+
+python
+Copy
+Edit
+from langchain.chains import RetrievalQA
+from langchain.llms import HuggingFacePipeline
+from langchain.embeddings import SentenceTransformerEmbeddings
+from langchain.vectorstores import Chroma
+from transformers import pipeline
+
+# create LLM with streaming
+hf_pipeline = pipeline(
+    "text-generation",
+    model="mistral-7b-instruct",
+    device_map="auto",
+    trust_remote_code=True,
+    max_new_tokens=256,
+    do_sample=False,
+)
+
+llm = HuggingFacePipeline(pipeline=hf_pipeline)
+
+# wrap embeddings & vectorstore
+emb = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+vectordb = Chroma(persist_directory="vectordb", embedding_function=emb)
+
+qa = RetrievalQA.from_chain_type(
+    llm=llm,
+    chain_type="stuff",      # or “map_rerank” if you want to rank
+    retriever=vectordb.as_retriever(search_kwargs={"k": 3}),
+    return_source_documents=True,
+)
+This gives you a simple qa({"query": "...”}) that returns both .result and .source_documents.
+
+5. Streamlit UI with Streaming
+Use Streamlit’s async support and a callback to stream tokens:
+
+python
+Copy
+Edit
+# app.py
+import streamlit as st
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+
+st.set_page_config(page_title="eBay RAG Chatbot", layout="wide")
+st.title("🤖 eBay User Agreement Chatbot")
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+query = st.text_input("Ask a question about the eBay User Agreement:")
+if query:
+    st.session_state.history.append(("user", query))
+    with st.spinner("Thinking…"):
+        # new call with streaming
+        qa.llm.callback_manager.add_handler(StreamingStdOutCallbackHandler())
+        res = qa({"query": query})
+        answer = res["result"]
+        sources = "\n\n".join([doc.page_content for doc in res["source_documents"]])
+        st.session_state.history.append(("bot", answer))
+
+        # show sources
+        st.markdown("**Sources:**")
+        st.write(sources)
+
+for speaker, text in st.session_state.history:
+    if speaker == "user":
+        st.markdown(f"**You:** {text}")
+    else:
+        st.markdown(f"**Bot:** {text}")
+
+# Sidebar stats
+with st.sidebar:
+    st.write(f"Model: mistral-7b-instruct")
+    st.write(f"Indexed chunks: {len(chunks)}")
+    if st.button("Clear Chat"):
+        st.session_state.history = []
+Run with:
+
+bash
+Copy
+Edit
+streamlit run app.py
+6. Deliverables & Tips
+No full fine‑tuning required—you’ll pass with prompt engineering + instruction‑tuned LLM.
+
+Keep your folder structure exactly as the spec (data/, chunks/, vectordb/, src/, app.py, etc.).
+
+In your README, document each step succinctly and include sample screenshots/GIFs of streaming in action.
+
+In your PDF report, highlight any hallucination cases you saw and how you mitigated them (e.g., by showing sources).
+
+Why This Is Fast & Solid
+Reuse battle‑tested libraries (LangChain, Chroma, Hugging Face) instead of hand‑rolling every piece.
+
+Skip model fine‑tuning—use an existing instruct model and focus your efforts on integration.
+
+Minimal code—your entire RAG + UI logic fits in ~50 lines of Python.
+
+Streaming out of the box via HuggingFace’s pipeline + Streamlit callbacks.
+
+You’ll have a fully working, source‑grounded, streaming RAG chatbot in a few hours, not days. Good luck!
+
+
+
+
+
+
+
+
+
+
